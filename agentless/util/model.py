@@ -384,6 +384,55 @@ class DeepSeekChatDecoder(DecoderBase):
         return False
 
 
+class OllamaChatDecoder(DecoderBase):
+    def __init__(self, name: str, logger, **kwargs) -> None:
+        super().__init__(name, logger, **kwargs)
+
+    def codegen(
+        self, message: str, num_samples: int = 1, prompt_cache: bool = False
+    ) -> List[dict]:
+        if self.temperature == 0:
+            assert num_samples == 1
+
+        trajs = []
+        for _ in range(num_samples):
+            config = create_chatgpt_config(
+                message=message,
+                max_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                batch_size=1,
+                model=self.name,
+            )
+            ret = request_chatgpt_engine(
+                config, self.logger, base_url="http://localhost:11434/v1"
+            )
+            if ret:
+                trajs.append(
+                    {
+                        "response": ret.choices[0].message.content,
+                        "usage": {
+                            "completion_tokens": ret.usage.completion_tokens,
+                            "prompt_tokens": ret.usage.prompt_tokens,
+                        },
+                    }
+                )
+            else:
+                trajs.append(
+                    {
+                        "response": "",
+                        "usage": {
+                            "completion_tokens": 0,
+                            "prompt_tokens": 0,
+                        },
+                    }
+                )
+
+        return trajs
+
+    def is_direct_completion(self) -> bool:
+        return False
+
+
 def make_model(
     model: str,
     backend: str,
@@ -410,6 +459,14 @@ def make_model(
         )
     elif backend == "deepseek":
         return DeepSeekChatDecoder(
+            name=model,
+            logger=logger,
+            batch_size=batch_size,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+        )
+    elif backend == "ollama":
+        return OllamaChatDecoder(
             name=model,
             logger=logger,
             batch_size=batch_size,
