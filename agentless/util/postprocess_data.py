@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+import shutil
 import subprocess
 import uuid
 from collections import OrderedDict
@@ -89,8 +90,8 @@ def lint_code(repo_playground, temp_name, code, prev_code="") -> tuple[bool, set
     )
     s = o.stdout.decode("utf-8")
 
-    # remove playground
-    subprocess.run(f"rm -rf {repo_playground}", shell=True)
+    # remove playground (shutil.rmtree instead of `rm -rf` - not a Windows command)
+    shutil.rmtree(repo_playground, ignore_errors=True)
 
     errors = set()
     if s != "":
@@ -128,9 +129,9 @@ def fake_git_repo(repo_playground, file_pathes, old_contents, new_contents) -> s
     for file_path, old_content, new_content in zip(
         file_pathes, old_contents, new_contents
     ):
-        # create a file
-        subprocess.run(
-            f"mkdir -p {repo_playground}/{os.path.dirname(file_path)}", shell=True
+        # create a file (os.makedirs instead of `mkdir -p` - not a Windows command)
+        os.makedirs(
+            os.path.join(repo_playground, os.path.dirname(file_path)), exist_ok=True
         )
 
         with open(f"{repo_playground}/{file_path}", "w") as f:
@@ -139,7 +140,7 @@ def fake_git_repo(repo_playground, file_pathes, old_contents, new_contents) -> s
         # add file to git
         # same message is okay
         subprocess.run(
-            f"cd {repo_playground} && git add {file_path} && git commit -m 'initial commit'",
+            f'cd {repo_playground} && git add {file_path} && git commit -m "initial commit"',
             shell=True,
         )
 
@@ -157,8 +158,8 @@ def fake_git_repo(repo_playground, file_pathes, old_contents, new_contents) -> s
 
     s = o.stdout.decode("utf-8")
 
-    # remove playground
-    subprocess.run(f"rm -rf {repo_playground}", shell=True)
+    # remove playground (shutil.rmtree instead of `rm -rf` - not a Windows command)
+    shutil.rmtree(repo_playground, ignore_errors=True)
 
     return s
 
@@ -178,9 +179,9 @@ def fake_git_apply(repo_playground, file_path, old_content, patch) -> str:
     # create a fake git repo
     subprocess.run(f"cd {repo_playground} && git init", shell=True)
 
-    # create a file
-    subprocess.run(
-        f"mkdir -p {repo_playground}/{os.path.dirname(file_path)}", shell=True
+    # create a file (os.makedirs instead of `mkdir -p` - not a Windows command)
+    os.makedirs(
+        os.path.join(repo_playground, os.path.dirname(file_path)), exist_ok=True
     )
 
     with open(f"{repo_playground}/{file_path}", "w") as f:
@@ -188,7 +189,7 @@ def fake_git_apply(repo_playground, file_path, old_content, patch) -> str:
 
     # add file to git
     subprocess.run(
-        f"cd {repo_playground} && git add {file_path} && git commit -m 'initial commit'",
+        f'cd {repo_playground} && git add {file_path} && git commit -m "initial commit"',
         shell=True,
     )
 
@@ -218,15 +219,12 @@ def fake_git_apply(repo_playground, file_path, old_content, patch) -> str:
             print("stderr> ", o.stderr.decode("utf-8"))
             assert False, "shouldn't happen"
 
-    # get git diff
-    o = subprocess.run(
-        f"cd {repo_playground} && cat {file_path}", shell=True, capture_output=True
-    )
+    # get git diff (plain file read instead of `cat` - not a Windows command)
+    with open(f"{repo_playground}/{file_path}") as f:
+        s = f.read()
 
-    s = o.stdout.decode("utf-8")
-
-    # remove playground
-    subprocess.run(f"rm -rf {repo_playground}", shell=True)
+    # remove playground (shutil.rmtree instead of `rm -rf` - not a Windows command)
+    shutil.rmtree(repo_playground, ignore_errors=True)
 
     return s
 
@@ -248,8 +246,9 @@ def fake_git_apply_multiple(repo_playground, file_path_contents, patch) -> dict:
 
     # create files
     for file_path, old_content in file_path_contents.items():
-        subprocess.run(
-            f"mkdir -p {repo_playground}/{os.path.dirname(file_path)}", shell=True
+        # os.makedirs instead of `mkdir -p` - not a Windows command
+        os.makedirs(
+            os.path.join(repo_playground, os.path.dirname(file_path)), exist_ok=True
         )
 
         with open(f"{repo_playground}/{file_path}", "w") as f:
@@ -257,7 +256,7 @@ def fake_git_apply_multiple(repo_playground, file_path_contents, patch) -> dict:
 
         # add file to git
         subprocess.run(
-            f"cd {repo_playground} && git add {file_path} && git commit -m 'initial commit'",
+            f'cd {repo_playground} && git add {file_path} && git commit -m "initial commit"',
             shell=True,
         )
 
@@ -289,18 +288,15 @@ def fake_git_apply_multiple(repo_playground, file_path_contents, patch) -> dict:
 
     new_file_path_contents = {}
 
-    # get git diff
+    # get git diff (plain file read instead of `cat` - not a Windows command)
     for file_path, old_content in file_path_contents.items():
-        o = subprocess.run(
-            f"cd {repo_playground} && cat {file_path}", shell=True, capture_output=True
-        )
-
-        s = o.stdout.decode("utf-8")
+        with open(f"{repo_playground}/{file_path}") as f:
+            s = f.read()
 
         new_file_path_contents[file_path] = s
 
-    # remove playground
-    subprocess.run(f"rm -rf {repo_playground}", shell=True)
+    # remove playground (shutil.rmtree instead of `rm -rf` - not a Windows command)
+    shutil.rmtree(repo_playground, ignore_errors=True)
 
     return new_file_path_contents
 

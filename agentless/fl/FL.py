@@ -8,6 +8,7 @@ from agentless.util.preprocess_data import (
     get_full_file_paths_and_classes_and_functions,
     get_repo_files,
     line_wrap_content,
+    shortlist_candidate_files,
     show_project_structure,
 )
 
@@ -40,12 +41,56 @@ Please look through the following GitHub problem description and Repository stru
 ###
 
 Please only provide the full path and return at most 5 files.
-The returned files should be separated by new lines ordered by most to least important and wrapped with ```
-For example:
-```
-file1.py
-file2.py
-```
+
+IMPORTANT: the Repository Structure above is an INDENTED TREE, not a flat list. Each nested
+folder is indented 4 spaces deeper than its parent. To get a file's full path, you must
+concatenate EVERY parent folder name, from the outermost (least indented) down to the file,
+separated by "/". Do not drop the outermost folder(s) - a common mistake is only using the
+last 1-2 levels of nesting.
+
+For example, if the Repository Structure above contained exactly this:
+package/
+    core/
+        file1.py
+    utils/
+        file2.py
+
+then the two full paths are:
+package/core/file1.py
+package/utils/file2.py
+
+(NOT "core/file1.py" or "file1.py" - those are missing the outer "package/" folder.)
+
+Do NOT wrap the answer in ``` code fences and do NOT add any other text, numbering, or
+explanation. Return ONLY the full file paths, one per line, ordered by most to least
+important.
+"""
+
+    obtain_relevant_files_from_shortlist_prompt = """
+Please look through the following GitHub problem description and the list of candidate files
+below, and select which files would need to be edited to fix the problem.
+
+### GitHub Problem Description ###
+{problem_statement}
+
+###
+
+### Candidate Files ###
+{file_list}
+
+###
+
+Select AT MOST 5 files from the Candidate Files list above that are most likely relevant to
+fixing this problem, ordered from most to least likely.
+
+IMPORTANT: copy each selected path EXACTLY as it appears in the Candidate Files list above -
+do not modify, abbreviate, or reformat it in any way. Only choose paths that are literally
+present in that list; do not invent a path or recall one from your own knowledge of the
+codebase, even if you think you know the right file - if it is not in the list, it cannot be
+selected.
+
+Do NOT wrap the answer in ``` code fences and do NOT add any other text, numbering, or
+explanation. Return ONLY the selected file paths, one per line.
 """
 
     obtain_irrelevant_files_prompt = """
@@ -99,6 +144,11 @@ The locations can be specified as class names, function or method names, or exac
 
 Please provide the class name, function or method name, or the exact line numbers that need to be edited.
 The possible location outputs should be either "class", "function" or "line".
+
+IMPORTANT: consider EVERY file shown above, not just the one you are most confident about.
+For each file that plausibly needs a change, list its path and at least one location under
+it - do not skip a file just because you already found a strong candidate elsewhere; the
+real fix may span multiple files, or your top candidate may not be the actual answer.
 
 ### Examples:
 ```
@@ -161,6 +211,13 @@ For each location you provide, either give the name of the class, the name of a 
 {file_contents}
 
 ###
+
+IMPORTANT: only report locations inside the files shown above under "### Skeleton of
+Relevant Files ###" - do not use your own knowledge of the project to reference any other
+file. Each file below is preceded by a header line "### File: <path> ###" - when you name a
+file, copy that exact <path> string character-for-character (it uses "/" and ends in ".py",
+e.g. "package/core/file.py"). Do NOT use Python import/dotted-module notation
+(e.g. "package.core.file" is WRONG - use "package/core/file.py" instead).
 
 Please provide the complete set of locations as either a class name, a function name, or a variable name.
 Note that if you include a class, you do not need to list its specific methods.
@@ -316,9 +373,22 @@ Return just the locations wrapped with ```.
 
         found_files = []
 
-        message = self.obtain_relevant_files_prompt.format(
+        files, classes, functions = get_full_file_paths_and_classes_and_functions(
+            self.structure
+        )
+
+        # Shortlist candidates by keyword overlap instead of showing the full
+        # indented tree - asking the model to SELECT from a short list of real
+        # paths is far more reliable than asking it to RECONSTRUCT a full path
+        # from tree indentation (see capstone/PILOT_RUN_LOG.md, Aug 2026 pilot).
+        shortlist = shortlist_candidate_files(
+            files, self.problem_statement, max_candidates=25
+        )
+        file_list_text = "\n".join(fn for fn, _ in shortlist)
+
+        message = self.obtain_relevant_files_from_shortlist_prompt.format(
             problem_statement=self.problem_statement,
-            structure=show_project_structure(self.structure).strip(),
+            file_list=file_list_text,
         ).strip()
         self.logger.info(f"prompting with message:\n{message}")
         self.logger.info("=" * 80)
@@ -345,12 +415,39 @@ Return just the locations wrapped with ```.
         raw_output = traj["response"]
         model_found_files = self._parse_model_return_lines(raw_output)
 
-        files, classes, functions = get_full_file_paths_and_classes_and_functions(
-            self.structure
-        )
-
         # sort based on order of appearance in model_found_files
         found_files = correct_file_paths(model_found_files, files)
+
+        # fallback: if a line didn't exact-match, check whether its path
+        # segments form an in-order subsequence of one of the (already-
+        # vetted) shortlisted candidates' segments, with the filename
+        # matching exactly - catches small copy errors like dropping the
+        # outer folder ("core/asgi.py" for real "package/core/asgi.py") OR
+        # dropping a middle segment ("package/related.py" for real
+        # "package/fields/related.py"). Only matched against the shortlist,
+        # not the whole repo, to avoid reintroducing hallucination risk.
+        if len(found_files) < len(
+            [f for f in model_found_files if f.endswith(".py")]
+        ):
+
+            def _is_subsequence_match(model_line: str, candidate: str) -> bool:
+                model_parts = [p for p in model_line.strip("/").split("/") if p]
+                cand_parts = candidate.split("/")
+                if not model_parts or model_parts[-1] != cand_parts[-1]:
+                    return False
+                cand_iter = iter(cand_parts)
+                return all(part in cand_iter for part in model_parts)
+
+            shortlist_paths = [fn for fn, _ in shortlist]
+            for line in model_found_files:
+                line = line.strip()
+                if not line or line in found_files:
+                    continue
+                for candidate in shortlist_paths:
+                    if _is_subsequence_match(line, candidate):
+                        if candidate not in found_files:
+                            found_files.append(candidate)
+                        break
 
         self.logger.info(raw_output)
 

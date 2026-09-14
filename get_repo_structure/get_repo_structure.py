@@ -2,6 +2,7 @@ import argparse
 import ast
 import json
 import os
+import shutil
 import subprocess
 import uuid
 
@@ -41,21 +42,48 @@ def checkout_commit(repo_path, commit_id):
         print(f"An unexpected error occurred: {e}")
 
 
-def clone_repo(repo_name, repo_playground):
-    try:
+def clone_repo(repo_name, repo_playground, commit_id=None):
+    repo_path = f"{repo_playground}/{repo_to_top_folder[repo_name]}"
+    url = f"https://github.com/{repo_name}.git"
 
-        print(
-            f"Cloning repository from https://github.com/{repo_name}.git to {repo_playground}/{repo_to_top_folder[repo_name]}..."
-        )
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                f"https://github.com/{repo_name}.git",
-                f"{repo_playground}/{repo_to_top_folder[repo_name]}",
-            ],
-            check=True,
-        )
+    if commit_id is not None:
+        # Shallow-fetch just the target commit instead of the full history.
+        # Much smaller download (a few MB vs the repo's entire history), and
+        # GitHub supports fetching an arbitrary commit SHA directly.
+        try:
+            print(
+                f"Shallow-fetching commit {commit_id} of {repo_name} to {repo_path}..."
+            )
+            os.makedirs(repo_path, exist_ok=True)
+            subprocess.run(["git", "-C", repo_path, "init", "-q"], check=True)
+            subprocess.run(
+                ["git", "-C", repo_path, "remote", "add", "origin", url], check=True
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    repo_path,
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    commit_id,
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", repo_path, "checkout", "FETCH_HEAD"], check=True
+            )
+            print("Repository shallow-fetched successfully.")
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"Shallow fetch failed ({e}), falling back to full clone...")
+            subprocess.run(["rm", "-rf", repo_path], check=True)
+
+    try:
+        print(f"Cloning repository from {url} to {repo_path}...")
+        subprocess.run(["git", "clone", url, repo_path], check=True)
         print("Repository cloned successfully.")
     except subprocess.CalledProcessError as e:
         print(f"An error occurred while running git command: {e}")
@@ -76,12 +104,22 @@ def get_project_structure_from_scratch(
     # create playground
     os.makedirs(repo_playground)
 
-    clone_repo(repo_name, repo_playground)
-    checkout_commit(f"{repo_playground}/{repo_to_top_folder[repo_name]}", commit_id)
+    clone_repo(repo_name, repo_playground, commit_id=commit_id)
+    # clone_repo already checks out commit_id (shallow fetch -> FETCH_HEAD, or
+    # falls back to a full clone here needing an explicit checkout)
+    repo_path = f"{repo_playground}/{repo_to_top_folder[repo_name]}"
+    current_head = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if current_head != commit_id:
+        checkout_commit(repo_path, commit_id)
     structure = create_structure(f"{repo_playground}/{repo_to_top_folder[repo_name]}")
-    # clean up
-    subprocess.run(
-        ["rm", "-rf", f"{repo_playground}/{repo_to_top_folder[repo_name]}"], check=True
+    # clean up (shutil.rmtree instead of `rm -rf` subprocess - `rm` isn't on PATH
+    # in a plain Windows/PowerShell environment, only when Git Bash's usr/bin is)
+    shutil.rmtree(
+        f"{repo_playground}/{repo_to_top_folder[repo_name]}", ignore_errors=True
     )
     d = {
         "repo": repo_name,
@@ -99,7 +137,11 @@ def parse_python_file(file_path, file_content=None):
     """
     if file_content is None:
         try:
-            with open(file_path, "r") as file:
+            # explicit utf-8 (with a lossy fallback) - Django's source has plenty
+            # of non-ASCII bytes, and relying on the platform-default encoding
+            # breaks on Windows (cp1252) even though it happens to work under
+            # Git Bash / Linux / Mac (utf-8 default there)
+            with open(file_path, "r", encoding="utf-8", errors="replace") as file:
                 file_content = file.read()
                 parsed_data = ast.parse(file_content)
         except Exception as e:  # Catch all types of exceptions

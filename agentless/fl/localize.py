@@ -282,7 +282,46 @@ def localize_instance(
                     args.backend,
                     logger,
                 )
-                if not args.direct_edit_loc:
+                if not args.direct_edit_loc and args.fine_grain_separate_file:
+                    coarse_found_locs = found_related_locs
+                    found_edit_locs = {}
+                    additional_artifact_loc_edit_location = []
+                    edit_loc_traj = []
+                    for pred_file in pred_files:
+                        single_coarse_locs = {
+                            pred_file: coarse_found_locs.get(pred_file, [])
+                        }
+                        (
+                            found_edit_locs_i,
+                            additional_artifact_loc_edit_location_i,
+                            edit_loc_traj_i,
+                        ) = fl.localize_line_from_coarse_function_locs(
+                            [pred_file],
+                            single_coarse_locs,
+                            context_window=args.context_window,
+                            add_space=args.add_space,
+                            no_line_number=args.no_line_number,
+                            sticky_scroll=args.sticky_scroll,
+                            mock=args.mock,
+                            temperature=trying_temp,
+                            num_samples=args.num_samples,
+                            keep_old_order=args.keep_old_order,
+                        )
+                        found_edit_locs.update(found_edit_locs_i)
+                        additional_artifact_loc_edit_location.append(
+                            additional_artifact_loc_edit_location_i
+                        )
+                        edit_loc_traj.append(edit_loc_traj_i)
+
+                    if check_contains_valid_loc(found_edit_locs, structure=structure):
+                        break
+
+                    logger.info(
+                        f"No valid edit locations found ... retrying with higher temperature ..."
+                    )
+                    trying_temp = 1.0
+
+                elif not args.direct_edit_loc:
                     coarse_found_locs = found_related_locs
                     (
                         found_edit_locs,
@@ -489,9 +528,13 @@ def merge(args):
         for locs in start_file_locs:
             merged_found_locs = []
             if "found_edit_locs" in locs and len(locs["found_edit_locs"]):
-                merged_found_locs = merge_locs(
-                    locs["found_edit_locs"][st_id : st_id + 1]
-                )
+                # FL.py's localize_line_from_coarse_function_locs() returns a bare
+                # dict (not a list) when num_samples == 1, instead of a
+                # single-element list - normalize before slicing by sample index.
+                edit_locs = locs["found_edit_locs"]
+                if isinstance(edit_locs, dict):
+                    edit_locs = [edit_locs]
+                merged_found_locs = merge_locs(edit_locs[st_id : st_id + 1])
             merged_locs.append({**locs, "found_edit_locs": merged_found_locs})
         with open(
             f"{args.output_folder}/loc_merged_{st_id}-{en_id}_outputs.jsonl", "w"
@@ -549,6 +592,7 @@ def main():
     parser.add_argument("--no_line_number", action="store_true")
     parser.add_argument("--sticky_scroll", action="store_true")
     parser.add_argument("--related_level_separate_file", action="store_true")
+    parser.add_argument("--fine_grain_separate_file", action="store_true")
     parser.add_argument("--context_window", type=int, default=10)
     parser.add_argument("--keep_old_order", action="store_true")
     parser.add_argument("--irrelevant", action="store_true")
@@ -577,13 +621,14 @@ def main():
             "deepseek-coder",
             "gpt-4o-mini-2024-07-18",
             "claude-3-5-sonnet-20241022",
+            "qwen2.5-coder:7b",
         ],
     )
     parser.add_argument(
         "--backend",
         type=str,
         default="openai",
-        choices=["openai", "deepseek", "anthropic"],
+        choices=["openai", "deepseek", "anthropic", "ollama"],
     )
     parser.add_argument(
         "--dataset",

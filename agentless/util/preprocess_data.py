@@ -1,5 +1,8 @@
 import json
+import math
 import os
+import re
+from collections import Counter
 
 from agentless.util.parse_global_var import parse_global_var_from_code
 from get_repo_structure.get_repo_structure import (
@@ -690,6 +693,105 @@ def correct_file_paths(model_found_files, files):
         return found_files
     else:
         return []
+
+
+_NOISE_PATH_MARKERS = ("/migrations/", "/locale/", "/docs/", "/doc/", "/examples/", "/example/")
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "to", "of",
+    "in", "on", "for", "with", "and", "or", "if", "this", "that", "it", "its", "as",
+    "by", "at", "from", "not", "do", "does", "did", "but", "when", "then", "so",
+    "there", "here", "which", "what", "who", "how", "you", "your", "we", "our",
+}
+
+
+def _is_noise_file(file_path: str) -> bool:
+    """Heuristic filter for files that are almost never a bug's real fix location."""
+    if not file_path.endswith(".py"):
+        return True
+    base = file_path.rsplit("/", 1)[-1]
+    if base.startswith("test_") or base.endswith("_test.py") or base == "conftest.py":
+        return True
+    lower = "/" + file_path.lower()
+    return any(marker in lower for marker in _NOISE_PATH_MARKERS)
+
+
+def _extract_keywords(text: str) -> Counter:
+    words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text.lower())
+    return Counter(w for w in words if w not in _STOPWORDS)
+
+
+def shortlist_candidate_files(files, problem_statement, max_candidates=25):
+    """
+    Rank real repo files by TF-IDF-weighted keyword overlap with the problem
+    statement, after filtering out files that are almost never a bug's actual
+    fix location (tests, migrations, locale, docs). Returns the top
+    `max_candidates` as a list of (file_path, file_lines) tuples, most
+    relevant first.
+
+    Why this exists: asking a smaller LLM to reconstruct a full file path from
+    an indented directory tree is unreliable (see capstone/PILOT_RUN_LOG.md,
+    Aug 2026 pilot) - instead of asking it to reconstruct paths, we narrow the
+    huge file list down with cheap keyword matching first, and only ask the
+    LLM to select from an already-short, already-valid list of real paths.
+
+    Why TF-IDF and not a raw keyword count: a raw count is biased toward long,
+    generic files - a small file that specifically mentions a rare, diagnostic
+    term (e.g. a class name unique to the bug) can lose badly to a large file
+    that racks up hundreds of hits on common words just by being big (see
+    PILOT_RUN_LOG.md's scikit-learn-25973 case study). Normalizing by file
+    length (term frequency) and downweighting words that appear in most files
+    (inverse document frequency) fixes both biases at once.
+    """
+    problem_keywords = set(_extract_keywords(problem_statement).keys())
+
+    candidates = [(fp, fl) for fp, fl in files if not _is_noise_file(fp)]
+
+    if problem_keywords and candidates:
+        file_term_counts = {}
+        file_lengths = {}
+        doc_freq = Counter()
+        for file_path, file_lines in candidates:
+            content = " ".join(file_lines) if file_lines else ""
+            counts = _extract_keywords(content)
+            file_term_counts[file_path] = counts
+            file_lengths[file_path] = max(sum(counts.values()), 1)
+            for kw in problem_keywords:
+                if counts.get(kw, 0) > 0:
+                    doc_freq[kw] += 1
+
+        n_docs = len(candidates)
+        idf = {
+            kw: math.log((n_docs + 1) / (doc_freq.get(kw, 0) + 1)) + 1
+            for kw in problem_keywords
+        }
+
+        scored = []
+        for file_path, file_lines in candidates:
+            counts = file_term_counts[file_path]
+            length = file_lengths[file_path]
+            score = sum(
+                (counts.get(kw, 0) / length) * idf[kw] for kw in problem_keywords
+            )
+
+            # small bonus if a problem keyword appears in the path/module name
+            # itself - a strong signal, kept small relative to the tf-idf scale
+            path_words = set(re.findall(r"[a-z_]+", file_path.lower()))
+            score += 0.05 * len(path_words & problem_keywords)
+
+            if score > 0:
+                scored.append((score, file_path, file_lines))
+    else:
+        scored = []
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:max_candidates]
+
+    # fallback: if keyword matching found nothing at all, take the first
+    # max_candidates non-noise files rather than showing an empty list
+    if not top:
+        top = [(0, fp, fl) for fp, fl in candidates][:max_candidates]
+
+    return [(fp, fl) for _, fp, fl in top]
 
 
 def clean_method_left_space(method_code: str) -> str:
