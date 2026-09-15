@@ -700,6 +700,97 @@ def parse_str_replace_edit_commands(
     return content
 
 
+def _leading_ws(line):
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _reindent(text, delta):
+    """Shift every non-blank line in `text` by `delta` spaces."""
+    out = []
+    for line in text.splitlines():
+        if not line.strip():
+            out.append(line)
+        elif delta >= 0:
+            out.append(" " * delta + line)
+        else:
+            cut = min(-delta, len(_leading_ws(line)))
+            out.append(line[cut:])
+    return "\n".join(out)
+
+
+def find_indent_tolerant_match(original, context_segment):
+    """
+    Locate `original` inside `context_segment`, ignoring each line's leading
+    whitespace.
+
+    A small model reliably gets the CONTENT of a SEARCH block right but often
+    gets its indentation wrong -- observed on Qwen2.5-Coder-7B: 12 spaces where
+    the file has 8, and on a later run no indentation at all, for the same
+    correct line. Leading whitespace carries no information in a SEARCH block:
+    the target line's indentation is already fixed by where it sits in the file.
+    So matching on it is a requirement we can drop without losing anything.
+
+    Returns (matched_text, indent_delta). `matched_text` is the EXACT text from
+    `context_segment` (safe to hand to str.replace); `indent_delta` is how far
+    the real code is indented relative to the model's SEARCH block, so the
+    REPLACE block can be shifted by the same amount and stay valid Python.
+
+    Returns (None, 0) if there is no match, or if there is MORE THAN ONE --
+    we never guess between ambiguous candidates.
+    """
+    orig_lines = original.splitlines()
+    if not orig_lines:
+        return None, 0
+
+    ctx_lines = context_segment.splitlines()
+    orig_stripped = [line.strip() for line in orig_lines]
+    n = len(orig_lines)
+
+    matches = [
+        i
+        for i in range(len(ctx_lines) - n + 1)
+        if [line.strip() for line in ctx_lines[i : i + n]] == orig_stripped
+    ]
+    if len(matches) != 1:
+        return None, 0
+
+    matched_lines = ctx_lines[matches[0] : matches[0] + n]
+
+    # measure the shift on the first non-blank line of the block
+    delta = 0
+    for orig_line, matched_line in zip(orig_lines, matched_lines):
+        if orig_line.strip():
+            delta = len(_leading_ws(matched_line)) - len(_leading_ws(orig_line))
+            break
+
+    return "\n".join(matched_lines), delta
+
+
+def resolve_edit(original, replace, context_segment):
+    """
+    Work out the exact text to search for and what to put in its place.
+
+    Tries an exact whole-line match first -- stock Agentless behaviour, so
+    anything that already worked keeps working unchanged. Only if that fails
+    does it fall back to matching with leading whitespace ignored, shifting the
+    REPLACE block by the same amount so the result stays correctly indented.
+
+    Returns (None, None) when neither approach finds a unique match.
+    """
+    exact_original = "\n" + original + "\n"
+    if exact_original in context_segment:
+        return exact_original, "\n" + replace + "\n"
+
+    matched, delta = find_indent_tolerant_match(original, context_segment)
+    if matched is None:
+        return None, None
+
+    wrapped = "\n" + matched + "\n"
+    if wrapped not in context_segment:  # defensive: block sat at a segment edge
+        return None, None
+    return wrapped, "\n" + _reindent(replace, delta) + "\n"
+
+
 def parse_diff_edit_commands(
     commands, content, file_loc_intervals: list[tuple[int, int]]
 ):
@@ -776,10 +867,8 @@ def parse_diff_edit_commands(
                 original, replace, file_loc_intervals, content
             )
 
-            original = "\n" + original + "\n"
-            replace = "\n" + replace + "\n"
-
-            if original in context_segment:
+            resolved_original, _ = resolve_edit(original, replace, context_segment)
+            if resolved_original is not None:
                 can_apply.append(subcommand)
 
         # apply edits backwards
@@ -790,12 +879,15 @@ def parse_diff_edit_commands(
                 original, replace, file_loc_intervals, content
             )
 
-            original = "\n" + original + "\n"
-            replace = "\n" + replace + "\n"
-            if (
-                original in context_segment
-            ):  # This may not be true after some previously applied edits
-                context_segment = context_segment.replace(original, replace)
+            # re-resolved here rather than reused: earlier edits may have
+            # already changed context_segment out from under the first pass
+            resolved_original, resolved_replace = resolve_edit(
+                original, replace, context_segment
+            )
+            if resolved_original is not None:
+                context_segment = context_segment.replace(
+                    resolved_original, resolved_replace
+                )
                 replaced = True
         # reassembly
         content = (
