@@ -18,10 +18,16 @@
 #   cd "C:\Users\USER\Documents\IIT\4thYear\FYP\Agentless"
 #   .\run_full_chain.ps1
 
+param(
+    # Output folder. Defaults to the v2 run (stage 2 now uses
+    # --related_level_separate_file). Pass -OutDir to write somewhere else and keep
+    # previous runs intact for comparison.
+    [string]$OutDir = "results/pilot_full_v2"
+)
+
 $ErrorActionPreference = "Continue"
 
 $SrcDir   = "results/pilot_rerun"      # where stage-1 output already lives
-$OutDir   = "results/pilot_full"       # where this run writes
 $Model    = "qwen2.5-coder:7b"
 $Backend  = "ollama"
 $Dataset  = "princeton-nlp/SWE-bench_Verified"
@@ -56,8 +62,13 @@ foreach ($bug in $bugs) {
     if (Test-Path "$related/loc_outputs.jsonl") {
         Write-Host "  [skip] stage 2 already done"
     } else {
-        Write-Host "  [run ] stage 2 - related elements"
-        python -m agentless.fl.localize --related_level `
+        Write-Host "  [run ] stage 2 - related elements (separate file)"
+        # --related_level_separate_file: ask about ONE candidate file per model call.
+        # Added after django-13401, where stage 2 returned an EMPTY answer for the file
+        # stage 1 had correctly ranked first, populated a different file instead, and
+        # everything downstream then worked on the wrong file. Mirrors what
+        # --fine_grain_separate_file does at stage 3.
+        python -m agentless.fl.localize --related_level --related_level_separate_file `
             --output_folder $related `
             --top_n $TopN --compress_assign --compress `
             --start_file $stage1 `
