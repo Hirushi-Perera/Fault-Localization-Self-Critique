@@ -31,6 +31,8 @@ from datasets import load_dataset
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "capstone")))
 from faithfulness_sketch import parse_patch_old_lines  # noqa: E402
+from patch_offsets import realign_patch  # noqa: E402
+from score_function_localization import make_reader  # noqa: E402
 
 LINE_RE = re.compile(r"^\s*line:\s*(\d+)", re.MULTILINE)
 TOLERANCES = [0, 5, 10, 25]
@@ -82,7 +84,7 @@ def main():
 
     print(f"Loading {args.dataset} ...")
     ds = load_dataset(args.dataset, split="test")
-    patches = {r["instance_id"]: r["patch"] for r in ds}
+    meta = {r["instance_id"]: (r["repo"], r["base_commit"], r["patch"]) for r in ds}
 
     bugs = sorted(
         d for d in os.listdir(args.results_dir)
@@ -97,7 +99,15 @@ def main():
             record = json.loads(f.readline())
 
         preds = predicted_lines(record)
-        gold = parse_patch_old_lines(patches.get(bug) or "")
+        repo, commit, gold_patch = meta.get(bug, (None, None, ""))
+        if repo:
+            # gold hunk headers can be offset from where the patch really applies
+            # (sklearn-10908: 22 lines) - see patch_offsets.py
+            gold_patch, report = realign_patch(gold_patch, make_reader(repo, commit))
+            for f, hdr, actual in report:
+                if actual is not None and actual != hdr:
+                    print(f"  {bug}: gold hunk realigned {hdr} -> {actual}")
+        gold = parse_patch_old_lines(gold_patch or "")
 
         # distance of each prediction, in rank order; None = wrong file entirely
         dists = [distance_to_gold(pf, pl, gold) for pf, pl in preds]

@@ -30,6 +30,7 @@ from datasets import load_dataset
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "capstone")))
 from faithfulness_sketch import gold_functions, match_location  # noqa: E402
+from patch_offsets import realign_patch  # noqa: E402
 
 CACHE = os.path.join("results", ".file_cache")
 ENTRY_RE = re.compile(r"^\s*(class|function):\s*(\S+)", re.MULTILINE)
@@ -129,7 +130,14 @@ def main():
             continue
 
         print(f"  {bug} ...")
-        gold = gold_functions(patch, make_reader(repo, commit))
+        read = make_reader(repo, commit)
+        # gold hunk headers can be offset from where the patch really applies
+        # (sklearn-10908: 22 lines) - see patch_offsets.py
+        patch, report = realign_patch(patch, read)
+        for f, hdr, actual in report:
+            if actual is not None and actual != hdr:
+                print(f"    gold hunk in {f} realigned: header {hdr} -> actual {actual}")
+        gold = gold_functions(patch, read)
         preds = predicted_elements(record)
 
         # best tier achieved, scanning predictions in rank order
@@ -180,14 +188,19 @@ def main():
     print(f"  right CLASS only, no function     : {len(cls_only)}/{len(rows)}"
           f"   [partial credit, not in the headline]")
 
-    for k in (1, 3):
-        hits = sum(1 for r in strict if r["rank"] and r["rank"] <= k)
+    # PUBLISHED metrics: acc@k (AutoFL) and MFR (DeepFL), counting EXACT matches only
+    # (same file + same qualified function). The file+short-name tier above is our own
+    # faithfulness-matcher rule and is deliberately NOT used for these.
+    exact = [r for r in rows if r["tier"] == "exact"]
+    print("\n  PUBLISHED - exact matches only:")
+    for k in (1, 3, 5):
+        hits = sum(1 for r in exact if r["rank"] and r["rank"] <= k)
         print(f"  acc@{k}: {hits}/{len(rows)} ({hits / n * 100:.1f}%)")
 
-    ranks = [r["rank"] for r in strict if r["rank"]]
+    ranks = [r["rank"] for r in exact if r["rank"]]
     if ranks:
-        print(f"  MFR (strict hits only): {sum(ranks) / len(ranks):.3f}"
-              f"   [over {len(ranks)}/{len(rows)} bugs]")
+        print(f"  MFR: {sum(ranks) / len(ranks):.3f}"
+              f"   [over the {len(ranks)}/{len(rows)} bugs with an exact hit]")
 
     print("\n  Stage 2 answers with classes as well as functions, so a class-only")
     print("  answer is a real partial result -- the right container without the")

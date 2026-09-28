@@ -159,6 +159,13 @@ def main():
     print(f"  MRR            : {sum(r['rr'] for r in rows) / n:5.3f}")
     print(f"  MAP            : {sum(r['ap'] for r in rows) / n:5.3f}")
 
+    # MFR - Mean First Rank (DeepFL): mean rank of the first correct file, over the
+    # bugs that had one. Reciprocal rank is 1/rank, so rank = 1/rr.
+    first_ranks = [round(1 / r["rr"]) for r in rows if r["rr"] > 0]
+    if first_ranks:
+        print(f"  MFR            : {sum(first_ranks) / len(first_ranks):5.3f}"
+              f"   (over the {len(first_ranks)}/{n} bugs with a correct file)")
+
     # ---- precision / recall / F1, pooled over every file across every bug ----
     # recall    = of all the files the real fixes changed, how many did we find?
     # precision = of all the files we guessed, how many were actually right?
