@@ -187,3 +187,6 @@ dev/
 *.ipynb
 
 playground/
+
+# SBFL harness artifacts
+junit.xml
