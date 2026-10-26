@@ -22,6 +22,9 @@ import re
 
 from datasets import load_dataset
 
+from path_canon import canon_patch, make_canon
+from score_function_localization import make_reader
+
 GOLD_FILE_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.MULTILINE)
 PATCH_FILE_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)", re.MULTILINE)
 
@@ -43,6 +46,7 @@ def main():
     print(f"Loading {args.dataset} ...")
     ds = load_dataset(args.dataset, split="test")
     gold = {r["instance_id"]: r["patch"] for r in ds}
+    repos = {r["instance_id"]: (r["repo"], r["base_commit"]) for r in ds}
 
     bugs = sorted(
         d for d in os.listdir(args.results_dir)
@@ -63,6 +67,9 @@ def main():
             record = json.loads(f.readline())
 
         patch = record.get("model_patch") or ""
+        if patch.strip() and bug in repos:     # top-level-file alias, see path_canon.py
+            repo, commit = repos[bug]
+            patch = canon_patch(patch, make_canon(repo, make_reader(repo, commit)))
         gold_files = files_in_patch(gold.get(bug))
         pred_files = files_in_patch(patch)
 

@@ -22,7 +22,16 @@ param(
     # Output folder. Defaults to the v2 run (stage 2 now uses
     # --related_level_separate_file). Pass -OutDir to write somewhere else and keep
     # previous runs intact for comparison.
-    [string]$OutDir = "results/pilot_full_v2"
+    [string]$OutDir = "results/pilot_full_v2",
+
+    # Explicit bug list. When given, stage 1 is RUN for each bug (into $OutDir)
+    # rather than reused from $SrcDir -- use this for bugs that have never been run.
+    # When omitted, bugs are discovered from $SrcDir as before and stage 1 is reused.
+    [string[]]$Bugs = @(),
+
+    # Dataset Agentless reads. Default = SWE-bench Verified. For BugsInPy, pass the local
+    # folder made by bugsinpy_to_agentless.py, e.g. -Dataset datasets/bugsinpy_pilot
+    [string]$Dataset = "princeton-nlp/SWE-bench_Verified"
 )
 
 $ErrorActionPreference = "Continue"
@@ -30,17 +39,21 @@ $ErrorActionPreference = "Continue"
 $SrcDir   = "results/pilot_rerun"      # where stage-1 output already lives
 $Model    = "qwen2.5-coder:7b"
 $Backend  = "ollama"
-$Dataset  = "princeton-nlp/SWE-bench_Verified"
 $TopN     = 3
 $CtxWin   = 25
 
 $env:OPENAI_API_KEY = "dummy"          # Ollama ignores it, the client library requires it
 
-# every bug that has stage-1 output
-$bugs = Get-ChildItem $SrcDir -Directory |
-        Where-Object { Test-Path (Join-Path $_.FullName "loc_outputs.jsonl") } |
-        Select-Object -ExpandProperty Name |
-        Sort-Object
+if ($Bugs.Count -gt 0) {
+    $bugs = $Bugs | Sort-Object
+    Write-Host "Explicit bug list given - stage 1 will be RUN for these, not reused.`n"
+} else {
+    # every bug that already has stage-1 output
+    $bugs = Get-ChildItem $SrcDir -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName "loc_outputs.jsonl") } |
+            Select-Object -ExpandProperty Name |
+            Sort-Object
+}
 
 Write-Host "=== Running full chain for $($bugs.Count) bugs ===" -ForegroundColor Cyan
 Write-Host "Config: --fine_grain_separate_file, --context_window $CtxWin, single greedy sample"
@@ -52,7 +65,25 @@ foreach ($bug in $bugs) {
     Write-Host "--------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "BUG: $bug" -ForegroundColor Yellow
 
-    $stage1 = "$SrcDir/$bug/loc_outputs.jsonl"
+    # ---- stage 1: file-level localization ----
+    # Reused from $SrcDir for bugs already run; generated into $OutDir for new ones.
+    if ($Bugs.Count -gt 0) {
+        $stage1 = "$OutDir/$bug/loc_outputs.jsonl"
+        if (Test-Path $stage1) {
+            Write-Host "  [skip] stage 1 already done"
+        } else {
+            Write-Host "  [run ] stage 1 - file level"
+            python -m agentless.fl.localize --file_level `
+                --output_folder "$OutDir/$bug" `
+                --top_n $TopN `
+                --model $Model --backend $Backend `
+                --dataset $Dataset `
+                --target_id $bug --num_threads 1
+        }
+    } else {
+        $stage1 = "$SrcDir/$bug/loc_outputs.jsonl"
+    }
+
     $related = "$OutDir/$bug/related"
     $editloc = "$OutDir/$bug/edit_loc"
     $merged  = "$OutDir/$bug/merged"

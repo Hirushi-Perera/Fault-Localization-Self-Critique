@@ -634,8 +634,9 @@ def main():
         "--dataset",
         type=str,
         default="princeton-nlp/SWE-bench_Lite",
-        choices=["princeton-nlp/SWE-bench_Lite", "princeton-nlp/SWE-bench_Verified"],
-        help="Current supported dataset for evaluation",
+        # choices= removed so a LOCAL dataset folder (e.g. datasets/bugsinpy_pilot made by
+        # bugsinpy_to_agentless.py) is accepted; load_dataset() already reads both.
+        help="SWE-bench_Lite, SWE-bench_Verified, or a local folder containing test.jsonl",
     )
 
     args = parser.parse_args()

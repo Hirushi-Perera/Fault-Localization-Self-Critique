@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "capstone")))
 from faithfulness_sketch import gold_functions, match_location  # noqa: E402
 from patch_offsets import realign_patch  # noqa: E402
+from path_canon import canon_record, make_canon  # noqa: E402
 
 CACHE = os.path.join("results", ".file_cache")
 ENTRY_RE = re.compile(r"^\s*(class|function):\s*(\S+)", re.MULTILINE)
@@ -131,6 +132,7 @@ def main():
 
         print(f"  {bug} ...")
         read = make_reader(repo, commit)
+        record = canon_record(record, make_canon(repo, read))   # see path_canon.py
         # gold hunk headers can be offset from where the patch really applies
         # (sklearn-10908: 22 lines) - see patch_offsets.py
         patch, report = realign_patch(patch, read)

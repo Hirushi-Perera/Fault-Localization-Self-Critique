@@ -51,6 +51,7 @@ from datasets import load_dataset
 
 from agentless.util.preprocess_data import merge_intervals, transfer_arb_locs_to_locs
 from patch_offsets import realign_patch
+from path_canon import canon_record, make_canon
 
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "capstone")))
@@ -270,6 +271,9 @@ def main():
         s3 = (first_record(os.path.join(base, "merged", "loc_merged_0-0_outputs.jsonl"))
               or first_record(os.path.join(base, "edit_loc", "loc_outputs.jsonl")))
         rp = first_record(os.path.join(base, "repair", "output_0_processed.jsonl"))
+        # top-level-file alias ("black/black.py" for black.py) - see path_canon.py
+        canon = make_canon(repo, read)
+        s1, s2, s3, rp = (canon_record(x, canon) for x in (s1, s2, s3, rp))
 
         # gold hunk headers can be offset from where the patch really applies
         # (sklearn-10908: 22 lines) - locate each hunk in the buggy file first

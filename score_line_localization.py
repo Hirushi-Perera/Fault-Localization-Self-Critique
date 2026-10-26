@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.abspath(
 from faithfulness_sketch import parse_patch_old_lines  # noqa: E402
 from patch_offsets import realign_patch  # noqa: E402
 from score_function_localization import make_reader  # noqa: E402
+from path_canon import canon_record, make_canon  # noqa: E402
 
 LINE_RE = re.compile(r"^\s*line:\s*(\d+)", re.MULTILINE)
 TOLERANCES = [0, 5, 10, 25]
@@ -98,8 +99,10 @@ def main():
         with open(path, encoding="utf-8") as f:
             record = json.loads(f.readline())
 
-        preds = predicted_lines(record)
         repo, commit, gold_patch = meta.get(bug, (None, None, ""))
+        if repo:                               # top-level-file alias, see path_canon.py
+            record = canon_record(record, make_canon(repo, make_reader(repo, commit)))
+        preds = predicted_lines(record)
         if repo:
             # gold hunk headers can be offset from where the patch really applies
             # (sklearn-10908: 22 lines) - see patch_offsets.py
