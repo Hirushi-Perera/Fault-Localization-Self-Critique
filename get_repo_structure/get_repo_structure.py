@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import uuid
 
 import pandas as pd
@@ -23,6 +24,17 @@ repo_to_top_folder = {
     "pylint-dev/pylint": "pylint",
     "pallets/flask": "flask",
 }
+
+
+class _RepoFolders(dict):
+    """Repos outside SWE-bench (e.g. BugsInPy's) fall back to the repo's own name instead
+    of raising KeyError. SWE-bench repos still resolve exactly as listed above."""
+
+    def __missing__(self, key):
+        return key.split("/")[-1]
+
+
+repo_to_top_folder = _RepoFolders(repo_to_top_folder)
 
 
 def checkout_commit(repo_path, commit_id):
@@ -59,19 +71,20 @@ def clone_repo(repo_name, repo_playground, commit_id=None):
             subprocess.run(
                 ["git", "-C", repo_path, "remote", "add", "origin", url], check=True
             )
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    repo_path,
-                    "fetch",
-                    "--depth",
-                    "1",
-                    "origin",
-                    commit_id,
-                ],
-                check=True,
-            )
+            # Retry: on a flaky connection GitHub can drop a large fetch part-way
+            # ("RPC failed; curl 56 ... early EOF"), seen for django on 12 Oct 2026.
+            for attempt in range(1, 4):
+                try:
+                    subprocess.run(
+                        ["git", "-C", repo_path, "fetch", "--depth", "1", "origin", commit_id],
+                        check=True,
+                    )
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 3:
+                        raise
+                    print(f"Fetch attempt {attempt} failed, retrying in 15 s...")
+                    time.sleep(15)
             subprocess.run(
                 ["git", "-C", repo_path, "checkout", "FETCH_HEAD"], check=True
             )
@@ -79,7 +92,8 @@ def clone_repo(repo_name, repo_playground, commit_id=None):
             return
         except subprocess.CalledProcessError as e:
             print(f"Shallow fetch failed ({e}), falling back to full clone...")
-            subprocess.run(["rm", "-rf", repo_path], check=True)
+            # shutil.rmtree, not `rm -rf`: `rm` is not on PATH on Windows
+            shutil.rmtree(repo_path, ignore_errors=True)
 
     try:
         print(f"Cloning repository from {url} to {repo_path}...")
